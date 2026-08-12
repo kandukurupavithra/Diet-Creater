@@ -1,435 +1,292 @@
+import base64
+import requests
 import streamlit as st
 
-st.set_page_config(
-    page_title="Diet Creator",
-    page_icon="🥗",
-    layout="wide",
-    initial_sidebar_state="collapsed"
-)
+st.set_page_config(page_title="Diet Creator", page_icon="🥗", layout="wide")
 
+# ---------- STATE ----------
+for key, default in {
+    "logged_in": False,
+    "signup": False,
+    "diet_created": False,
+}.items():
+    if key not in st.session_state:
+        st.session_state[key] = default
+
+# ---------- HELPERS ----------
+def secret(name):
+    try:
+        return st.secrets.get(name, "")
+    except Exception:
+        return ""
+
+def calculate(age, gender, height, weight, activity, goal):
+    bmi = weight / ((height / 100) ** 2)
+    bmr = (10 * weight + 6.25 * height - 5 * age +
+           (5 if gender == "Male" else -161))
+    factor = {"Sedentary": 1.20, "Lightly Active": 1.375,
+              "Moderately Active": 1.55, "Very Active": 1.725}[activity]
+    calories = bmr * factor
+    if goal == "Weight Loss":
+        calories -= 400
+    elif goal == "Weight Gain":
+        calories += 350
+    calories = max(1200, round(calories))
+    protein = round(weight * (1.2 if goal == "Weight Loss" else
+                              1.4 if goal == "Weight Gain" else 1.3))
+    water = round(weight * 0.035, 1)
+    return bmi, calories, protein, water
+
+def detect_food(image):
+    key = secret("OPENAI_API_KEY")
+    if not key:
+        return None
+    try:
+        from openai import OpenAI
+        encoded = base64.b64encode(image.getvalue()).decode()
+        client = OpenAI(api_key=key)
+        result = client.responses.create(
+            model="gpt-4.1-mini",
+            input=[{"role": "user", "content": [
+                {"type": "input_text",
+                 "text": "Identify the main food in this image. Return only its common name. If unclear, return unknown."},
+                {"type": "input_image",
+                 "image_url": f"data:image/jpeg;base64,{encoded}"}
+            ]}]
+        )
+        text = result.output_text.strip()
+        return None if text.lower() == "unknown" else text
+    except Exception:
+        return None
+
+def nutrition(food):
+    key = secret("USDA_API_KEY")
+    if not key:
+        return None
+    try:
+        r = requests.post(
+            "https://api.nal.usda.gov/fdc/v1/foods/search",
+            params={"api_key": key},
+            json={"query": food, "pageSize": 1},
+            timeout=20)
+        r.raise_for_status()
+        foods = r.json().get("foods", [])
+        if not foods:
+            return None
+        f = foods[0]
+        ns = {x.get("nutrientName","").lower(): x.get("value",0) or 0
+              for x in f.get("foodNutrients", [])}
+
+        def val(term):
+            for n, v in ns.items():
+                if term in n:
+                    return v
+            return 0
+
+        return {
+            "name": f.get("description", food),
+            "calories": val("energy"),
+            "protein": val("protein"),
+            "carbs": val("carbohydrate"),
+            "fat": val("total lipid"),
+            "fiber": val("fiber"),
+            "a": val("vitamin a"), "c": val("vitamin c"),
+            "d": val("vitamin d"), "e": val("vitamin e"),
+            "k": val("vitamin k"), "calcium": val("calcium"),
+            "iron": val("iron"), "potassium": val("potassium")
+        }
+    except Exception:
+        return None
+
+# ---------- STYLE ----------
 st.markdown("""
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700;800&display=swap');
-
-html, body, [class*="css"] {
-    font-family: 'Poppins', sans-serif;
-}
-
-.stApp {
-    background: #f7fbf6;
-}
-
-.block-container {
-    max-width: 1450px;
-    padding: 0 3rem 2rem 3rem;
-}
-
-/* Navigation */
-.navbar {
-    background: white;
-    padding: 18px 28px;
-    border-radius: 0 0 18px 18px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    box-shadow: 0 3px 18px rgba(20, 80, 40, .08);
-    margin-bottom: 25px;
-}
-
-.brand {
-    font-size: 28px;
-    font-weight: 800;
-    color: #16833d;
-}
-
-.brand span {
-    color: #f57c00;
-}
-
-.navlinks {
-    display: flex;
-    gap: 35px;
-    color: #263238;
-    font-weight: 600;
-}
-
-.navlinks .active {
-    color: #16833d;
-    border-bottom: 3px solid #16833d;
-    padding-bottom: 7px;
-}
-
-.login {
-    background: #16833d;
-    color: white;
-    padding: 11px 20px;
-    border-radius: 10px;
-    font-weight: 700;
-}
-
-/* Hero */
-.hero {
-    min-height: 330px;
-    border-radius: 28px;
-    padding: 55px;
-    background: linear-gradient(115deg, #edf9e9 0%, #ffffff 52%, #fff1c9 100%);
-    position: relative;
-    overflow: hidden;
-    margin-bottom: 25px;
-}
-
-.hero h1 {
-    font-size: 52px;
-    line-height: 1.12;
-    color: #111;
-    margin: 0;
-    max-width: 620px;
-}
-
-.hero h1 span {
-    color: #16833d;
-}
-
-.hero p {
-    color: #4b5563;
-    font-size: 18px;
-    max-width: 550px;
-    line-height: 1.7;
-}
-
-.hero-badge {
-    display: inline-block;
-    background: #16833d;
-    color: white;
-    padding: 13px 22px;
-    border-radius: 12px;
-    font-weight: 700;
-    margin-top: 12px;
-}
-
-/* Cards */
-.card {
-    background: white;
-    border-radius: 18px;
-    padding: 22px;
-    border: 1px solid #e6eee5;
-    box-shadow: 0 5px 20px rgba(25, 80, 35, .06);
-    height: 100%;
-}
-
-.card h3 {
-    color: #16833d;
-    margin-top: 0;
-}
-
-.metric {
-    border-radius: 16px;
-    padding: 20px;
-    min-height: 115px;
-}
-
-.metric-green { background: #e8f8ed; }
-.metric-blue { background: #e8f4ff; }
-.metric-orange { background: #fff4df; }
-.metric-pink { background: #ffeaf2; }
-
-.metric-icon {
-    font-size: 30px;
-}
-
-.metric-title {
-    font-weight: 600;
-    color: #52606d;
-}
-
-.metric-value {
-    font-size: 24px;
-    font-weight: 800;
-}
-
-/* Meal cards */
-.meal {
-    background: white;
-    border-radius: 16px;
-    overflow: hidden;
-    border: 1px solid #e8e8e8;
-    box-shadow: 0 4px 15px rgba(0,0,0,.05);
-    height: 100%;
-}
-
-.meal-head {
-    color: white;
-    padding: 12px;
-    text-align: center;
-    font-weight: 700;
-}
-
-.breakfast { background: #f59e0b; }
-.snack { background: #16a34a; }
-.lunch { background: #2196f3; }
-.evening { background: #9333ea; }
-.dinner { background: #ec407a; }
-
-.meal-body {
-    padding: 16px;
-}
-
-.food-image {
-    width: 100%;
-    height: 125px;
-    object-fit: cover;
-    border-radius: 12px;
-    margin-bottom: 10px;
-}
-
-.food-list {
-    color: #475569;
-    font-size: 13px;
-    line-height: 1.9;
-}
-
-.kcal {
-    text-align: center;
-    padding: 9px;
-    border-radius: 9px;
-    background: #f3f8f2;
-    color: #16833d;
-    font-weight: 800;
-    margin-top: 12px;
-}
-
-/* Streamlit widgets */
-div[data-testid="stButton"] button {
-    background: linear-gradient(90deg, #16833d, #23a455);
-    color: white;
-    border: none;
-    border-radius: 10px;
-    padding: 12px 20px;
-    font-weight: 700;
-    width: 100%;
-}
-
-div[data-testid="stButton"] button:hover {
-    background: linear-gradient(90deg, #0f6d31, #16833d);
-    color: white;
-}
-
-.footer {
-    background: #087b36;
-    color: white;
-    margin-top: 35px;
-    padding: 25px;
-    border-radius: 18px;
-    text-align: center;
-}
-
-.small-note {
-    color: #64748b;
-    font-size: 13px;
-}
+*{font-family:Poppins,sans-serif}
+.stApp{background:linear-gradient(180deg,#f4fbf3,#fff)}
+.block-container{max-width:1450px;padding:0 2.5rem 2rem}
+.nav{background:white;border-radius:0 0 20px 20px;padding:18px 28px;
+display:flex;justify-content:space-between;box-shadow:0 5px 25px #175b2212;margin-bottom:25px}
+.logo{font-size:28px;font-weight:800;color:#16833d}.logo span{color:#f57c00}
+.hero{padding:50px;border-radius:28px;background:linear-gradient(115deg,#e5f8e7,#fff,#fff0c9);margin-bottom:28px}
+.hero h1{font-size:50px;line-height:1.1;margin:0}.hero h1 span{color:#16833d}
+.hero p{max-width:650px;color:#596572;font-size:17px;line-height:1.7}
+.card{background:white;border:1px solid #e3eee2;border-radius:20px;padding:22px;
+box-shadow:0 7px 25px #175b220c}
+.card h3{color:#16833d;margin-top:0}
+.metric{padding:18px;border-radius:17px;min-height:105px}
+.green{background:#e8f8ed}.blue{background:#e8f4ff}.orange{background:#fff4df}.pink{background:#ffeaf2}
+.metric-value{font-size:21px;font-weight:800}.metric-title{color:#64748b;font-size:13px}
+.meal{background:white;border:1px solid #e7e7e7;border-radius:17px;overflow:hidden;box-shadow:0 5px 18px #0000000c}
+.meal-title{color:white;text-align:center;padding:12px 5px;font-weight:700}
+.bf{background:#f59e0b}.sn{background:#16a34a}.ln{background:#2196f3}.ev{background:#9333ea}.di{background:#ec407a}
+.meal-body{padding:14px}.food-img{width:100%;height:115px;object-fit:cover;border-radius:12px}
+.foods{color:#475569;font-size:12px;line-height:1.9;margin-top:8px}
+.kcal{background:#f0f8ef;color:#16833d;text-align:center;font-weight:800;padding:9px;border-radius:10px;margin-top:10px}
+.login-card{max-width:500px;margin:8vh auto;background:white;border-radius:28px;padding:40px;
+box-shadow:0 15px 50px #175b221f;border:1px solid #e3eee2}
+.login-logo{text-align:center;font-size:35px;font-weight:800;color:#16833d}.login-logo span{color:#f57c00}
+.footer{background:#087b36;color:white;border-radius:18px;text-align:center;padding:25px;margin-top:35px}
 </style>
 """, unsafe_allow_html=True)
 
-# Navigation
-st.markdown("""
-<div class="navbar">
-    <div class="brand">🌿 Diet <span>Creator</span></div>
-    <div class="navlinks">
-        <div class="active">Home</div>
-        <div>About</div>
-        <div>Diet Plans</div>
-        <div>Nutrition</div>
-        <div>Blog</div>
-        <div>Contact</div>
-    </div>
-    <div class="login">♙ Login / Sign Up</div>
-</div>
-""", unsafe_allow_html=True)
+# ---------- LOGIN ----------
+if not st.session_state.logged_in:
+    st.markdown('<div class="login-card">', unsafe_allow_html=True)
+    st.markdown('<div class="login-logo">🌿 Diet <span>Creator</span></div>', unsafe_allow_html=True)
+    if not st.session_state.signup:
+        st.markdown("<h2 style='text-align:center'>Welcome Back! 👋</h2>", unsafe_allow_html=True)
+        email = st.text_input("Email", placeholder="you@example.com")
+        password = st.text_input("Password", type="password")
+        if st.button("🔐 Login", use_container_width=True):
+            if email.strip() and password.strip():
+                st.session_state.logged_in = True
+                st.rerun()
+            else:
+                st.error("Enter email and password.")
+        if st.button("Create a new account", use_container_width=True):
+            st.session_state.signup = True
+            st.rerun()
+    else:
+        st.markdown("<h2 style='text-align:center'>Create Account ✨</h2>", unsafe_allow_html=True)
+        name = st.text_input("Full Name")
+        email = st.text_input("Email Address")
+        password = st.text_input("Create Password", type="password")
+        confirm = st.text_input("Confirm Password", type="password")
+        if st.button("🚀 Sign Up", use_container_width=True):
+            if not all([name.strip(), email.strip(), password.strip()]):
+                st.error("Fill all fields.")
+            elif password != confirm:
+                st.error("Passwords do not match.")
+            else:
+                st.session_state.logged_in = True
+                st.rerun()
+        if st.button("Already have an account? Login", use_container_width=True):
+            st.session_state.signup = False
+            st.rerun()
+    st.markdown("</div>", unsafe_allow_html=True)
+    st.stop()
 
-# Hero
+# ---------- HEADER ----------
 st.markdown("""
+<div class="nav">
+<div class="logo">🌿 Diet <span>Creator</span></div>
+<div style="font-weight:600;color:#16833d">Home &nbsp; • &nbsp; Diet Plans &nbsp; • &nbsp; Nutrition</div>
+<div style="font-weight:700;color:#16833d">✓ Logged In</div>
+</div>
 <div class="hero">
-    <h1>Create Your<br>Perfect <span>Diet Plan</span></h1>
-    <p>
-        Get a personalized diet plan based on your goals,
-        preferences and lifestyle.
-    </p>
-    <div class="hero-badge">🥗 Eat Healthy • Live Healthy!</div>
+<h1>Create Your<br>Perfect <span>Diet Plan</span></h1>
+<p>Personalized meals based on your body information and goal, plus camera food scanning for estimated protein, vitamins, minerals and calories.</p>
 </div>
 """, unsafe_allow_html=True)
 
+# ---------- DIET CREATOR ----------
 st.markdown("## 👤 Create Your Personalized Plan")
-
-left, right = st.columns([1, 2.7], gap="large")
+left, right = st.columns([1, 2.8], gap="large")
 
 with left:
     st.markdown('<div class="card"><h3>👤 Your Information</h3>', unsafe_allow_html=True)
-
     name = st.text_input("Name", placeholder="Enter your name")
     age = st.number_input("Age", 10, 100, 22)
     gender = st.radio("Gender", ["Male", "Female"], horizontal=True)
     height = st.number_input("Height (cm)", 100, 220, 170)
     weight = st.number_input("Weight (kg)", 20, 200, 65)
-    activity = st.selectbox(
-        "Activity Level",
-        ["Sedentary", "Lightly Active", "Moderately Active", "Very Active"]
-    )
-    goal = st.selectbox(
-        "Goal",
-        ["Weight Loss", "Weight Maintenance", "Weight Gain"]
-    )
-
-    create = st.button("✨ Create My Diet Plan")
-
-    st.markdown('</div>', unsafe_allow_html=True)
+    activity = st.selectbox("Activity Level",
+        ["Sedentary","Lightly Active","Moderately Active","Very Active"])
+    goal = st.selectbox("Goal", ["Weight Loss","Weight Maintenance","Weight Gain"])
+    if st.button("✨ Create My Diet Plan", use_container_width=True):
+        st.session_state.diet_created = True
+    st.markdown("</div>", unsafe_allow_html=True)
 
 with right:
-    height_m = height / 100
-    bmi = weight / (height_m * height_m)
+    bmi, calories, protein_target, water = calculate(age, gender, height, weight, activity, goal)
+    cols = st.columns(4)
+    metrics = [
+        ("🔥","Daily Calories",f"{calories} kcal","green"),
+        ("💧","Water Intake",f"{water} L","blue"),
+        ("💪","Protein Target",f"{protein_target} g","orange"),
+        ("⚖️","BMI",f"{bmi:.1f}","pink")]
+    for c, (icon,title,val,cls) in zip(cols, metrics):
+        with c:
+            st.markdown(f'<div class="metric {cls}"><div>{icon}</div><div class="metric-title">{title}</div><div class="metric-value">{val}</div></div>', unsafe_allow_html=True)
 
-    if gender == "Male":
-        bmr = 10 * weight + 6.25 * height - 5 * age + 5
+    if st.session_state.diet_created:
+        st.success(f"🎉 Your personalized plan is ready{', '+name if name else ''}!")
+        if goal == "Weight Loss":
+            meals=[
+            ("🌅 Breakfast","bf","https://images.unsplash.com/photo-1517673400267-0251440c45dc?w=600",["Oats with milk","1 boiled egg","1 banana","Green tea"],"350 kcal"),
+            ("🍎 Snack","sn","https://images.unsplash.com/photo-1490474418585-ba9bad8fd0ea?w=600",["1 apple","8 almonds","Buttermilk"],"180 kcal"),
+            ("🍛 Lunch","ln","https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=600",["2 multigrain rotis","Dal","Mixed vegetables","Curd + salad"],"500 kcal"),
+            ("🥗 Evening","ev","https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=600",["Sprouts chaat","Green tea","1 fruit"],"180 kcal"),
+            ("🌙 Dinner","di","https://images.unsplash.com/photo-1601050690597-df0568f70950?w=600",["2 rotis","Paneer / tofu","Vegetable sabzi","Salad"],"450 kcal")]
+        elif goal == "Weight Gain":
+            meals=[
+            ("🌅 Breakfast","bf","https://images.unsplash.com/photo-1517673400267-0251440c45dc?w=600",["Oats with milk","2 eggs","Banana","Peanut butter"],"550 kcal"),
+            ("🍎 Snack","sn","https://images.unsplash.com/photo-1490474418585-ba9bad8fd0ea?w=600",["Banana shake","10 almonds","Dates"],"350 kcal"),
+            ("🍛 Lunch","ln","https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=600",["3 rotis","Rice","Dal","Paneer","Curd"],"700 kcal"),
+            ("🥗 Evening","ev","https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=600",["Peanut chaat","Fruit","Milk"],"350 kcal"),
+            ("🌙 Dinner","di","https://images.unsplash.com/photo-1601050690597-df0568f70950?w=600",["3 rotis","Paneer / tofu","Vegetable sabzi","Curd"],"650 kcal")]
+        else:
+            meals=[
+            ("🌅 Breakfast","bf","https://images.unsplash.com/photo-1517673400267-0251440c45dc?w=600",["Oats with milk","2 eggs","Banana","Green tea"],"450 kcal"),
+            ("🍎 Snack","sn","https://images.unsplash.com/photo-1490474418585-ba9bad8fd0ea?w=600",["Apple","10 almonds","Buttermilk"],"200 kcal"),
+            ("🍛 Lunch","ln","https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=600",["2 rotis","Rice","Dal","Vegetables","Curd"],"600 kcal"),
+            ("🥗 Evening","ev","https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=600",["Sprouts chaat","Fruit","Green tea"],"200 kcal"),
+            ("🌙 Dinner","di","https://images.unsplash.com/photo-1601050690597-df0568f70950?w=600",["2 rotis","Paneer / tofu","Vegetable sabzi","Salad"],"550 kcal")]
+        st.markdown("### 🥗 Your Personalized Daily Diet Plan")
+        mealcols=st.columns(5)
+        for col,(title,cls,img,foods,kcal) in zip(mealcols,meals):
+            with col:
+                items="".join(f"<div>✓ {x}</div>" for x in foods)
+                st.markdown(f'<div class="meal"><div class="meal-title {cls}">{title}</div><div class="meal-body"><img class="food-img" src="{img}"><div class="foods">{items}</div><div class="kcal">{kcal}</div></div></div>',unsafe_allow_html=True)
     else:
-        bmr = 10 * weight + 6.25 * height - 5 * age - 161
+        st.info("👈 Enter your details and click Create My Diet Plan.")
 
-    activity_factor = {
-        "Sedentary": 1.2,
-        "Lightly Active": 1.375,
-        "Moderately Active": 1.55,
-        "Very Active": 1.725
-    }[activity]
+# ---------- FOOD SCANNER ----------
+st.markdown("## 📸 Food Scanner & Nutrition")
+a,b=st.columns([1,1.6],gap="large")
+with a:
+    st.markdown('<div class="card"><h3>📷 Scan Your Food</h3><p>Take a photo or upload food. AI can identify it and USDA can return estimated nutrients.</p></div>',unsafe_allow_html=True)
+    camera=st.camera_input("Take a picture of your food")
+    upload=st.file_uploader("Or upload a photo",type=["jpg","jpeg","png"])
+    image=camera if camera else upload
 
-    calories = bmr * activity_factor
+with b:
+    if image:
+        st.image(image,caption="Food photo",width="stretch")
+        detected=detect_food(image)
+        if detected:
+            st.success(f"🤖 Detected: {detected}")
+            food=st.text_input("Food name",value=detected)
+        else:
+            st.info("If automatic recognition is unavailable, enter the food name below.")
+            food=st.text_input("Food name",placeholder="Example: banana, rice, dal, paneer")
+        if food:
+            n=nutrition(food)
+            if n:
+                st.markdown(f"### 🧪 Nutrition: {n['name']}")
+                r1=st.columns(4)
+                for c,t,v in zip(r1,["🔥 Calories","💪 Protein","🍚 Carbs","🥑 Fat"],
+                                  [f"{n['calories']:.0f} kcal",f"{n['protein']:.1f} g",f"{n['carbs']:.1f} g",f"{n['fat']:.1f} g"]):
+                    c.metric(t,v)
+                r2=st.columns(4)
+                for c,t,v in zip(r2,["🟠 Vitamin A","🍊 Vitamin C","☀️ Vitamin D","🟢 Vitamin E"],
+                                  [f"{n['a']:.1f} µg",f"{n['c']:.1f} mg",f"{n['d']:.1f} µg",f"{n['e']:.1f} mg"]):
+                    c.metric(t,v)
+                r3=st.columns(4)
+                for c,t,v in zip(r3,["🟣 Vitamin K","🦴 Calcium","🩸 Iron","⚡ Potassium"],
+                                  [f"{n['k']:.1f} µg",f"{n['calcium']:.1f} mg",f"{n['iron']:.1f} mg",f"{n['potassium']:.1f} mg"]):
+                    c.metric(t,v)
+                st.caption("Nutrition values are database estimates and vary with portion, recipe and preparation.")
+            else:
+                st.warning("Nutrition lookup failed. Check USDA_API_KEY in Streamlit Secrets.")
+    else:
+        st.markdown('<div class="card"><h3>🥦 Nutrition You'll See</h3><p>🔥 Calories</p><p>💪 Protein</p><p>🍊 Vitamins A, C, D, E & K</p><p>🦴 Calcium • 🩸 Iron • ⚡ Potassium</p></div>',unsafe_allow_html=True)
 
-    if goal == "Weight Loss":
-        calories -= 400
-    elif goal == "Weight Gain":
-        calories += 350
+# ---------- FOOTER ----------
+if st.button("🚪 Logout"):
+    st.session_state.logged_in=False
+    st.session_state.diet_created=False
+    st.rerun()
 
-    m1, m2, m3, m4 = st.columns(4)
-
-    with m1:
-        st.markdown(f"""
-        <div class="metric metric-green">
-            <div class="metric-icon">🔥</div>
-            <div class="metric-title">Daily Calories</div>
-            <div class="metric-value">{calories:.0f} kcal</div>
-            <small>Recommended</small>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with m2:
-        st.markdown("""
-        <div class="metric metric-blue">
-            <div class="metric-icon">💧</div>
-            <div class="metric-title">Water Intake</div>
-            <div class="metric-value">2.5 L</div>
-            <small>Per Day</small>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with m3:
-        st.markdown(f"""
-        <div class="metric metric-orange">
-            <div class="metric-icon">🎯</div>
-            <div class="metric-title">Goal</div>
-            <div class="metric-value" style="font-size:18px">{goal}</div>
-            <small>Personalized</small>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with m4:
-        st.markdown(f"""
-        <div class="metric metric-pink">
-            <div class="metric-icon">⚖️</div>
-            <div class="metric-title">BMI</div>
-            <div class="metric-value">{bmi:.1f}</div>
-            <small>{"Normal" if 18.5 <= bmi < 25 else "Check range"}</small>
-        </div>
-        """, unsafe_allow_html=True)
-
-    st.markdown("### 🥗 Your Daily Diet Plan")
-
-    meals = [
-        ("🌅 Breakfast", "breakfast",
-         "https://images.unsplash.com/photo-1517673400267-0251440c45dc?w=600",
-         ["Oatmeal with nuts", "1 Boiled egg", "1 Banana", "Green tea"], "400 kcal"),
-        ("🍎 Mid-Morning Snack", "snack",
-         "https://images.unsplash.com/photo-1490474418585-ba9bad8fd0ea?w=600",
-         ["1 Apple", "10 Almonds", "Buttermilk"], "150 kcal"),
-        ("🍛 Lunch", "lunch",
-         "https://images.unsplash.com/photo-1546833999-b9f581a1996d?w=600",
-         ["2 Multigrain rotis", "1 cup Dal", "Brown rice", "Salad & curd"], "550 kcal"),
-        ("🥗 Evening Snack", "evening",
-         "https://images.unsplash.com/photo-1512621776951-a57141f2eefd?w=600",
-         ["Sprouts chaat", "Green tea", "1 Fruit"], "150 kcal"),
-        ("🌙 Dinner", "dinner",
-         "https://images.unsplash.com/photo-1601050690597-df0568f70950?w=600",
-         ["2 Multigrain rotis", "Mixed vegetable sabzi", "Paneer / Tofu", "Salad"], "500 kcal")
-    ]
-
-    cols = st.columns(5, gap="small")
-
-    for col, (title, cls, image, foods, kcal) in zip(cols, meals):
-        with col:
-            food_html = "".join([f"<div>✓ {food}</div>" for food in foods])
-            st.markdown(f"""
-            <div class="meal">
-                <div class="meal-head {cls}">{title}</div>
-                <div class="meal-body">
-                    <img class="food-image" src="{image}">
-                    <div class="food-list">{food_html}</div>
-                    <div class="kcal">{kcal}</div>
-                </div>
-            </div>
-            """, unsafe_allow_html=True)
-
-st.markdown("<br>", unsafe_allow_html=True)
-
-c1, c2, c3 = st.columns(3)
-
-with c1:
-    st.markdown("""
-    <div class="card">
-        <h3>💡 Tips for You</h3>
-        <p>💧 Drink plenty of water throughout the day.</p>
-        <p>🍎 Eat meals at regular intervals.</p>
-        <p>🥦 Include vegetables and protein.</p>
-        <p>🚫 Limit highly processed foods.</p>
-        <p>😴 Get enough sleep and stay active.</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-with c2:
-    st.markdown("""
-    <div class="card">
-        <h3>📊 Nutrient Balance</h3>
-        <p>🟠 Carbohydrates — <b>50%</b></p>
-        <p>🟢 Proteins — <b>25%</b></p>
-        <p>🔵 Healthy Fats — <b>25%</b></p>
-        <hr>
-        <p class="small-note">Balanced nutrition can support your daily energy needs.</p>
-    </div>
-    """, unsafe_allow_html=True)
-
-with c3:
-    st.markdown("""
-    <div class="card">
-        <h3>🛡️ Disclaimer</h3>
-        <p class="small-note">
-        This diet planner is for general educational purposes only.
-        It does not replace professional medical or nutritional advice.
-        Consult a qualified dietitian or healthcare professional for
-        personalized guidance.
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-
-st.markdown("""
-<div class="footer">
-    © 2026 Diet Creator &nbsp; | &nbsp; Privacy Policy &nbsp; | &nbsp;
-    Terms of Service &nbsp; | &nbsp; Disclaimer
-    <br><br>
-    🌿 Eat Healthy • Live Healthy!
-</div>
-""", unsafe_allow_html=True)
+st.markdown('<div class="footer">🌿 <b>Diet Creator</b><br>Eat Healthy • Live Healthy!<br><br>For general educational use; not a substitute for professional medical or nutrition advice.</div>',unsafe_allow_html=True)
