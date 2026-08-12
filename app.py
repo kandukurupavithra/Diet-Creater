@@ -281,7 +281,16 @@ with b:
             else:
                 st.warning("Nutrition lookup failed. Check USDA_API_KEY in Streamlit Secrets.")
     else:
-        st.markdown('<div class="card"><h3>🥦 Nutrition You'll See</h3><p>🔥 Calories</p><p>💪 Protein</p><p>🍊 Vitamins A, C, D, E & K</p><p>🦴 Calcium • 🩸 Iron • ⚡ Potassium</p></div>',unsafe_allow_html=True)
+        st.markdown(
+    "<div class='card'>"
+    "<h3>🥦 Nutrition You'll See</h3>"
+    "<p>🔥 Calories</p>"
+    "<p>💪 Protein</p>"
+    "<p>🍊 Vitamins A, C, D, E & K</p>"
+    "<p>🦴 Calcium • 🩸 Iron • ⚡ Potassium</p>"
+    "</div>",
+    unsafe_allow_html=True
+)
 
 # ---------- FOOTER ----------
 if st.button("🚪 Logout"):
